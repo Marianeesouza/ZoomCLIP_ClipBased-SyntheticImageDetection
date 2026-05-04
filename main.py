@@ -28,6 +28,7 @@ from PIL import Image
 from torchvision.transforms  import CenterCrop, Resize, Compose, InterpolationMode
 from utils.processing import make_normalize
 from utils.fusion import apply_fusion
+from utils.crop_processing import process_attention_and_crop
 from networks import create_architecture, load_weights
 
 
@@ -38,7 +39,7 @@ def get_config(model_name, weights_dir='./weights'):
     return data['model_name'], model_path, data['arch'], data['norm_type'], data['patch_size']
 
 
-def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1):
+def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, extract_attention=False, attention_output_dir=None):
     table = pandas.read_csv(input_csv)[['filename',]]
     rootdataset = os.path.dirname(os.path.abspath(input_csv))
     
@@ -101,7 +102,38 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1):
                     batch_img[k] = torch.stack(batch_img[k], 0)
 
                 for model_name in do_models:
-                    out_tens = models_dict[model_name][1](batch_img[models_dict[model_name][0]].clone().to(device)).cpu().numpy()
+                    model_instance = models_dict[model_name][1]
+                    input_tensor = batch_img[models_dict[model_name][0]].clone().to(device)
+                    
+                    if extract_attention and hasattr(model_instance, 'forward_with_attention'):
+                        # 1. Extração capturando as ativações das 3 últimas camadas
+                        features, activations = model_instance.forward_with_attention(input_tensor)
+                        out_tens = model_instance.forward_head(features).cpu().numpy()
+                        
+                        # 2. Processar para cada imagem do batch
+                        for batch_idx, file_idx in enumerate(batch_id):
+                            filename = os.path.join(rootdataset, table.loc[file_idx, 'filename'])
+                            
+                            if activations:
+                                # Pegamos a ativação específica desta imagem no batch [Tokens, Dim]
+                                # Escolhemos a última camada (índice 2 na nossa lista de 3)
+                                img_activation = [act[:, batch_idx, :] for act in activations]
+                                
+                                crop_paths = process_attention_and_crop(
+                                    filename, 
+                                    img_activation, 
+                                    output_dir=attention_output_dir or "./attention_crops",
+                                    layer_idx=2,  # Usando a última camada capturada (-1)
+                                    max_crops=3   # Limitando aos Top 3 como discutido
+                                )
+                                
+                                if crop_paths:
+                                    table.loc[file_idx, f'{model_name}_attention_crop'] = ";".join(crop_paths)
+                                else:
+                                    table.loc[file_idx, f'{model_name}_attention_crop'] = ""
+                    else:
+                        # Inferência normal
+                        out_tens = model_instance(input_tensor).cpu().numpy()
 
                     if out_tens.shape[1] == 1:
                         out_tens = out_tens[:, 0]
@@ -136,6 +168,8 @@ if __name__ == "__main__":
     parser.add_argument("--models"     , '-m', type=str, help="List of models to test", default='clipdet_latent10k_plus,Corvi2023')
     parser.add_argument("--fusion"     , '-f', type=str, help="Fusion function", default='soft_or_prob')
     parser.add_argument("--device"     , '-d', type=str, help="Torch device", default='cuda:0')
+    parser.add_argument("--extract_attention", action='store_true', help="Extract attention maps and crop high-attention regions")
+    parser.add_argument("--attention_output_dir", type=str, help="Directory to save attention crops", default="./attention_crops")
     args = vars(parser.parse_args())
     
     if args['models'] is None:
@@ -143,7 +177,14 @@ if __name__ == "__main__":
     else:
         args['models'] = args['models'].split(',')
     
-    table = runnig_tests(args['in_csv'], args['weights_dir'], args['models'], args['device'])
+    table = runnig_tests(
+        args['in_csv'], 
+        args['weights_dir'], 
+        args['models'], 
+        args['device'],
+        extract_attention=args['extract_attention'],
+        attention_output_dir=args['attention_output_dir']
+    )
     if args['fusion'] is not None:
         table['fusion'] = apply_fusion(table[args['models']].values, args['fusion'], axis=-1)
     

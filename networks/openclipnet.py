@@ -68,6 +68,60 @@ class OpenClipLinear(nn.Module):
             features = self.bb[0].encode_image(x, normalize=self.normalize)
         return features
 
+    def forward_with_attention(self, x):
+        activations = []
+        
+        # Hook para capturar a saída dos blocos residuais
+        def hook_fn(module, input, output):
+            # output shape esperado: [257, Batch, Dim]
+            activations.append(output.detach().cpu())
+
+        visual_model = self.bb[0].visual
+        hooks = []
+
+        # IMPORTANTE: No CLIP, se usarmos o encode_image padrão,
+        # ele aplica um 'ln_post' e pega apenas o primeiro token.
+        # Precisamos interceptar as camadas do Transformer diretamente.
+        if hasattr(visual_model, 'transformer') and hasattr(visual_model.transformer, 'resblocks'):
+            # Vamos pegar as últimas 3 camadas
+            for i in range(1, 4):
+                layer = visual_model.transformer.resblocks[-i]
+                hooks.append(layer.register_forward_hook(hook_fn))
+
+        try:
+            with torch.no_grad():
+                self.bb[0].eval()
+                # Em vez de encode_image, usamos o forward do visual_model
+                # para garantir que os patches passem por todas as camadas
+                
+                # Passo 1: Converter pixels para patches (conv1)
+                x_patches = visual_model.conv1(x)  # [batch, dim, h, w]
+                x_patches = x_patches.reshape(x_patches.shape[0], x_patches.shape[1], -1)  # [batch, dim, 256]
+                x_patches = x_patches.permute(0, 2, 1)  # [batch, 256, dim]
+                
+                # Adicionar CLS token e Positional Embedding
+                x_patches = torch.cat([visual_model.class_embedding.to(x.dtype) + torch.zeros(x_patches.shape[0], 1, x_patches.shape[-1], dtype=x.dtype, device=x.device), x_patches], dim=1)
+                x_patches = x_patches + visual_model.positional_embedding.to(x.dtype)
+                x_patches = visual_model.ln_pre(x_patches)
+                
+                # Passo 2: Rodar o Transformer (isso dispara os hooks com os 257 tokens)
+                x_patches = x_patches.permute(1, 0, 2)  # [257, batch, dim]
+                x_features = visual_model.transformer(x_patches)
+                
+                # Passo 3: Finalização (o que o encode_image faria)
+                x_features = x_features.permute(1, 0, 2)  # [batch, 257, dim]
+                features = visual_model.ln_post(x_features[:, 0, :]) # Pega apenas o CLS
+                if visual_model.proj is not None:
+                    features = features @ visual_model.proj
+                    
+        finally:
+            for h in hooks:
+                h.remove()
+
+        # Invertemos para que a última camada seja a última da lista
+        activations.reverse() 
+        return features, activations
+
     def forward_head(self, x):
         return self.fc(x)
 
