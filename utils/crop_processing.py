@@ -100,6 +100,10 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
             output_filenames.append(out_path)
             print(f"  ✓ Candidato aprovado: Crop {idx} salvo (Score: {score:.0f})")
         else:
+            idx = len(output_filenames)
+            out_path = os.path.join(output_dir, f"{base_name}_discarted_crop_{idx}.png")
+            cv2.imwrite(out_path, crop)
+            output_filenames.append(out_path)
             print(f"  [Ignorado] Candidato com alto score mas muito uniforme (Parede/Fundo).")
 
     return output_filenames
