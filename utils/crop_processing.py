@@ -22,7 +22,7 @@ def is_high_info(crop, variance_threshold=18.0):
     # Se a variância for muito baixa, é uma área uniforme (parede, céu, etc)
     return std_dev[0][0] > variance_threshold
 
-def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=2, max_crops=3):
+def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=2, max_crops=1):
     os.makedirs(output_dir, exist_ok=True)
     base_name = os.path.splitext(os.path.basename(original_image_path))[0]
     
@@ -93,7 +93,7 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
         crop = cropped_base_img[y1:y2, x1:x2]
         
         # VALIDAÇÃO: Só aceita se tiver "informação" (não for uniforme)
-        if is_high_info(crop, variance_threshold=18.0):
+        if is_high_info(crop, variance_threshold=22.0):
             idx = len(output_filenames)
             out_path = os.path.join(output_dir, f"{base_name}_crop_{idx}.png")
             cv2.imwrite(out_path, crop)

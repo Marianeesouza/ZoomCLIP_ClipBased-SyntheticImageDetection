@@ -162,3 +162,6 @@ cython_debug/
 
 # attention_crops
 attention_crops/
+
+data/synthbuster/
+data/test_set/

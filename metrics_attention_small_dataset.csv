@@ -1,0 +1,7 @@
+auc,biggan,dalle3,diffusionprojectedGAN,proGAN,stable_diffusion_1,AVG
+clipdet_latent10k_plus_global,0.5,0.5,0.5,0.5,0.5,0.5
+clipdet_latent10k_plus_local,0.6390625,0.596875,0.8931250000000001,0.8424999999999999,0.640625,0.7224375
+clipdet_latent10k_plus_fusiongl,0.5,0.5,0.5,0.5,0.5,0.5
+clipdet_latent10k_plus,0.5,0.5,0.5,0.5,0.5,0.5
+Corvi2023,0.8912500000000001,1.0,0.9568749999999999,0.68625,1.0,0.906875
+fusion,0.8909375,1.0,0.95625,0.594375,1.0,0.8883125

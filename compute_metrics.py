@@ -12,7 +12,8 @@ dict_metrics = {
 
 def compute_metrics(input_csv, output_csv, metrics_fun):
     table = pandas.read_csv(output_csv)
-    list_algs = [_ for _ in table.columns if _!='filename']
+    list_algs = [col for col in table.columns if col != 'filename' 
+                 and pandas.api.types.is_numeric_dtype(table[col])]
     table = pandas.read_csv(input_csv).merge(table, on=['filename', ])
     assert 'typ' in table
     list_typs = sorted([_ for _ in set(table['typ']) if _!='real'])

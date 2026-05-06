@@ -103,52 +103,76 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
 
                 for model_name in do_models:
                     model_instance = models_dict[model_name][1]
-                    input_tensor = batch_img[models_dict[model_name][0]].clone().to(device)
+                    input_key = models_dict[model_name][0]
+                    input_tensor = batch_img[input_key].clone().to(device)
                     
                     if extract_attention and hasattr(model_instance, 'forward_with_attention'):
-                        # 1. Extração capturando as ativações das 3 últimas camadas
+                        # 1. Extração de Ativações
                         features, activations = model_instance.forward_with_attention(input_tensor)
-                        out_tens = model_instance.forward_head(features).cpu().numpy()
-                        
-                        # 2. Processar para cada imagem do batch
-                        for batch_idx, file_idx in enumerate(batch_id):
+                        # Logits globais para todo o batch
+                        global_logits = model_instance.forward_head(features).cpu().numpy().flatten()                        
+                        # Lista para armazenar o resultado final de cada imagem do batch
+                        final_logits_batch = []
+
+                        # 2. Processamento Individual (Necessário para os Crops)
+                        for b_idx in range(len(batch_id)):
+                            file_idx = batch_id[b_idx]
+                            g_logit = global_logits[b_idx]
                             filename = os.path.join(rootdataset, table.loc[file_idx, 'filename'])
                             
-                            if activations:
-                                # Pegamos a ativação específica desta imagem no batch [Tokens, Dim]
-                                # Escolhemos a última camada (índice 2 na nossa lista de 3)
-                                img_activation = [act[:, batch_idx, :] for act in activations]
+                            # Extrai a ativação específica desta imagem no batch
+                            # Forma: [Tokens, Dim]
+                            img_activation = [act[:, b_idx, :] for act in activations]
+                            
+                            # Gera o crop (usando a camada -1 por padrão no seu process_attention)
+                            crop_paths = process_attention_and_crop(
+                                filename, 
+                                img_activation, 
+                                output_dir=attention_output_dir or "./attention_crops",
+                                max_crops=1
+                            )
+                            
+                            g_logit = global_logits[b_idx][0] if global_logits.ndim > 1 else global_logits[b_idx]
+                            l_logit = -10.0 # Valor baixo padrão caso não haja crop válido
+                            
+                            if crop_paths:
+                                # Carrega o crop e aplica a mesma transformação do modelo
+                                crop_img = Image.open(crop_paths[0]).convert('RGB')
+                                crop_tensor = transform_dict[input_key](crop_img).unsqueeze(0).to(device)
                                 
-                                crop_paths = process_attention_and_crop(
-                                    filename, 
-                                    img_activation, 
-                                    output_dir=attention_output_dir or "./attention_crops",
-                                    layer_idx=2,  # Usando a última camada capturada (-1)
-                                    max_crops=3   # Limitando aos Top 3 como discutido
-                                )
-                                
-                                if crop_paths:
-                                    table.loc[file_idx, f'{model_name}_attention_crop'] = ";".join(crop_paths)
-                                else:
-                                    table.loc[file_idx, f'{model_name}_attention_crop'] = ""
-                    else:
-                        # Inferência normal
-                        out_tens = model_instance(input_tensor).cpu().numpy()
+                                with torch.no_grad():
+                                    # Avaliação local
+                                    l_res = model_instance(crop_tensor).cpu().numpy().flatten()
+                                    l_logit = l_res[0]
+                            
+                            # 3. FUSÃO: Max Pooling (Pega o sinal de fraude mais forte)
+                          
+                            # Salva as métricas auxiliares na tabela
+                            table.loc[file_idx, f'{model_name}_global'] = g_logit
+                            table.loc[file_idx, f'{model_name}_local'] = l_logit
 
-                    if out_tens.shape[1] == 1:
-                        out_tens = out_tens[:, 0]
-                    elif out_tens.shape[1] == 2:
-                        out_tens = out_tens[:, 1] - out_tens[:, 0]
-                    else:
-                        assert False
+                            combined_score = max(g_logit, l_logit)
+                            table.loc[file_idx, f'{model_name}_fusiongl'] = combined_score
+
+                            final_logits_batch.append(combined_score)
+
+                        logit1 = np.array(final_logits_batch)
                     
-                    if len(out_tens.shape) > 1:
-                        logit1 = np.mean(out_tens, (1, 2))
                     else:
-                        logit1 = out_tens
+                        # Inferência normal (Sem atenção/crop)
+                        out_tens = model_instance(input_tensor).cpu().numpy()
+                        
+                        # Ajuste de dimensões do logit
+                        if out_tens.shape[1] == 1:
+                            logit1 = out_tens[:, 0]
+                        elif out_tens.shape[1] == 2:
+                            logit1 = out_tens[:, 1] - out_tens[:, 0]
+                        else:
+                            logit1 = np.mean(out_tens, (1, 2))
 
-                    for ii, logit in zip(batch_id, logit1):
-                        table.loc[ii, model_name] = logit
+                    # Preenchimento final da tabela para o modelo atual
+                    for b_idx, f_idx in enumerate(batch_id):
+                        table.loc[f_idx, model_name] = logit1[b_idx]
 
                 batch_img = {k: list() for k in transform_dict}
                 batch_id = list()
