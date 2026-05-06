@@ -109,22 +109,22 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                     if extract_attention and hasattr(model_instance, 'forward_with_attention'):
                         # 1. Extração de Ativações
                         features, activations = model_instance.forward_with_attention(input_tensor)
-                        # Logits globais para todo o batch
-                        global_logits = model_instance.forward_head(features).cpu().numpy().flatten()                        
-                        # Lista para armazenar o resultado final de cada imagem do batch
+                        
+                        # Logits globais para todo o batch (Achatado para garantir [Batch])
+                        global_logits = model_instance.forward_head(features).cpu().numpy().flatten()
+                        
                         final_logits_batch = []
 
-                        # 2. Processamento Individual (Necessário para os Crops)
+                        # 2. Processamento Individual
                         for b_idx in range(len(batch_id)):
                             file_idx = batch_id[b_idx]
-                            g_logit = global_logits[b_idx]
+                            g_logit = global_logits[b_idx] # Pega o score global da imagem atual
                             filename = os.path.join(rootdataset, table.loc[file_idx, 'filename'])
                             
-                            # Extrai a ativação específica desta imagem no batch
-                            # Forma: [Tokens, Dim]
+                            # Extrai ativação específica
                             img_activation = [act[:, b_idx, :] for act in activations]
                             
-                            # Gera o crop (usando a camada -1 por padrão no seu process_attention)
+                            # Gera o crop
                             crop_paths = process_attention_and_crop(
                                 filename, 
                                 img_activation, 
@@ -132,26 +132,21 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                                 max_crops=1
                             )
                             
-                            g_logit = global_logits[b_idx][0] if global_logits.ndim > 1 else global_logits[b_idx]
-                            l_logit = -10.0 # Valor baixo padrão caso não haja crop válido
+                            l_logit = -10.0 # Default caso falhe o crop
                             
                             if crop_paths:
-                                # Carrega o crop e aplica a mesma transformação do modelo
                                 crop_img = Image.open(crop_paths[0]).convert('RGB')
                                 crop_tensor = transform_dict[input_key](crop_img).unsqueeze(0).to(device)
                                 
                                 with torch.no_grad():
-                                    # Avaliação local
                                     l_res = model_instance(crop_tensor).cpu().numpy().flatten()
                                     l_logit = l_res[0]
                             
-                            # 3. FUSÃO: Max Pooling (Pega o sinal de fraude mais forte)
-                          
-                            # Salva as métricas auxiliares na tabela
+                            # 3. FUSÃO E SALVAMENTO
+                            combined_score = max(g_logit, l_logit)
+                            
                             table.loc[file_idx, f'{model_name}_global'] = g_logit
                             table.loc[file_idx, f'{model_name}_local'] = l_logit
-
-                            combined_score = max(g_logit, l_logit)
                             table.loc[file_idx, f'{model_name}_fusiongl'] = combined_score
 
                             final_logits_batch.append(combined_score)
