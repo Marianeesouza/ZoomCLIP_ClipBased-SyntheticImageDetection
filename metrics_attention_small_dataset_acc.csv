@@ -1,7 +1,7 @@
 acc,biggan,dalle3,diffusionprojectedGAN,proGAN,stable_diffusion_1,AVG
-clipdet_latent10k_plus_global,0.5,0.5,0.5,0.5,0.5,0.5
-clipdet_latent10k_plus_local,0.5875,0.6125,0.7125,0.6875,0.6375,0.6475
-clipdet_latent10k_plus_fusiongl,0.5,0.5,0.5,0.5,0.5,0.5
-clipdet_latent10k_plus,0.5,0.5,0.5,0.5,0.5,0.5
+clipdet_latent10k_plus_global,0.575,0.55,0.9,0.9,0.625,0.71
+clipdet_latent10k_plus_local,0.5625,0.6125,0.7125,0.6875,0.6375,0.6425000000000001
+clipdet_latent10k_plus_fusiongl,0.5625,0.6125,0.7125,0.7125,0.6625,0.6525000000000001
+clipdet_latent10k_plus,0.5625,0.6125,0.7125,0.7125,0.6625,0.6525000000000001
 Corvi2023,0.525,1.0,0.65,0.5,1.0,0.735
-fusion,0.5,0.5,0.5,0.5,0.5,0.5
+fusion,0.5625,0.7125,0.7125,0.7125,0.7125,0.6824999999999999

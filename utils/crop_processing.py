@@ -34,7 +34,6 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
         print(f"Erro ao carregar imagem: {e}")
         return None
 
-    # 1. Seleção da Camada e Normalização de Dimensões
     feat = attention_maps[layer_idx].to(torch.float32)
     if feat.dim() == 3:
         if feat.shape[0] == 1: feat = feat[0]
@@ -45,11 +44,9 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
     elif num_tokens == 256: patches = feat
     else: return None
 
-    # 2. Cálculo de Energia
     energy = torch.norm(patches, dim=-1)
     energy_norm = (energy - energy.min()) / (energy.max() - energy.min() + 1e-8)
 
-    # 3. Gerar Máscara
     grid = energy_norm.reshape(GRID_SIZE, GRID_SIZE).detach().numpy()
     grid_resized = cv2.resize(grid, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_CUBIC)
     heatmap_8u = (grid_resized * 255).astype(np.uint8)
@@ -58,7 +55,6 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
     _, mask = cv2.threshold(heatmap_8u, int(thresh_val), 255, cv2.THRESH_BINARY)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7,7), np.uint8))
 
-    # 4. Ranqueamento de TODOS os Candidatos
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     all_candidates = []
 
@@ -72,16 +68,13 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
         score = area * mean_intensity
         all_candidates.append((score, cnt))
 
-    # Ordenar por importância (score)
     all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-    # 5. Geração Seletiva dos Crops (Busca até preencher a cota)
     output_filenames = []
     heatmap_vis = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
     cv2.imwrite(os.path.join(output_dir, f"{base_name}_heatmap.png"), heatmap_vis)
 
     for score, cnt in all_candidates:
-        # Se já atingimos o número máximo de crops válidos, paramos a busca
         if len(output_filenames) >= max_crops:
             break
             
@@ -92,7 +85,6 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
         
         crop = cropped_base_img[y1:y2, x1:x2]
         
-        # VALIDAÇÃO: Só aceita se tiver "informação" (não for uniforme)
         if is_high_info(crop, variance_threshold=22.0):
             idx = len(output_filenames)
             out_path = os.path.join(output_dir, f"{base_name}_crop_{idx}.png")

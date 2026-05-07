@@ -105,20 +105,24 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                     model_instance = models_dict[model_name][1]
                     input_key = models_dict[model_name][0]
                     input_tensor = batch_img[input_key].clone().to(device)
-                    
+
+                    with torch.no_grad():
+                        full_output = model_instance(input_tensor).cpu().numpy()
+                        
+                        if full_output.shape[1] == 1:
+                            global_logits = full_output[:, 0]
+                        elif full_output.shape[1] == 2:
+                            global_logits = full_output[:, 1] - full_output[:, 0]
+                        else:
+                            global_logits = np.mean(full_output, (1, 2))
+
                     if extract_attention and hasattr(model_instance, 'forward_with_attention'):
-                        # 1. Extração de Ativações
                         features, activations = model_instance.forward_with_attention(input_tensor)
                         
-                        # Logits globais para todo o batch (Achatado para garantir [Batch])
-                        global_logits = model_instance.forward_head(features).cpu().numpy().flatten()
-                        
                         final_logits_batch = []
-
-                        # 2. Processamento Individual
                         for b_idx in range(len(batch_id)):
                             file_idx = batch_id[b_idx]
-                            g_logit = global_logits[b_idx] # Pega o score global da imagem atual
+                            g_logit = global_logits[b_idx]
                             filename = os.path.join(rootdataset, table.loc[file_idx, 'filename'])
                             
                             # Extrai ativação específica
@@ -129,7 +133,7 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                                 filename, 
                                 img_activation, 
                                 output_dir=attention_output_dir or "./attention_crops",
-                                max_crops=1
+                                max_crops=5
                             )
                             
                             l_logit = -10.0 # Default caso falhe o crop
@@ -142,22 +146,18 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                                     l_res = model_instance(crop_tensor).cpu().numpy().flatten()
                                     l_logit = l_res[0]
                             
-                            # 3. FUSÃO E SALVAMENTO
                             combined_score = max(g_logit, l_logit)
                             
                             table.loc[file_idx, f'{model_name}_global'] = g_logit
                             table.loc[file_idx, f'{model_name}_local'] = l_logit
                             table.loc[file_idx, f'{model_name}_fusiongl'] = combined_score
-
                             final_logits_batch.append(combined_score)
-
+                        
                         logit1 = np.array(final_logits_batch)
                     
                     else:
-                        # Inferência normal (Sem atenção/crop)
                         out_tens = model_instance(input_tensor).cpu().numpy()
                         
-                        # Ajuste de dimensões do logit
                         if out_tens.shape[1] == 1:
                             logit1 = out_tens[:, 0]
                         elif out_tens.shape[1] == 2:
@@ -165,7 +165,6 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                         else:
                             logit1 = np.mean(out_tens, (1, 2))
 
-                    # Preenchimento final da tabela para o modelo atual
                     for b_idx, f_idx in enumerate(batch_id):
                         table.loc[f_idx, model_name] = logit1[b_idx]
 
