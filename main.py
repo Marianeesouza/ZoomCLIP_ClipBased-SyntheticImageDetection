@@ -125,29 +125,40 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                             g_logit = global_logits[b_idx]
                             filename = os.path.join(rootdataset, table.loc[file_idx, 'filename'])
                             
-                            # Extrai ativação específica
                             img_activation = [act[:, b_idx, :] for act in activations]
                             
-                            # Gera o crop
-                            crop_paths = process_attention_and_crop(
+                            pil_crops_list = process_attention_and_crop(
                                 filename, 
                                 img_activation, 
                                 output_dir=attention_output_dir or "./attention_crops",
-                                max_crops=5
+                                max_crops=5,
+                                save_images=False
                             )
+
+                            img_local_logits = []
+
+                            if pil_crops_list:
+                                for crop_img in pil_crops_list:
+
+                                    crop_tensor = transform_dict[input_key](crop_img).unsqueeze(0).to(device)
+                                    
+                                    with torch.no_grad():
+                                        l_res = model_instance(crop_tensor).cpu().numpy().flatten()
+                                        img_local_logits.append(l_res[0])
                             
-                            l_logit = -10.0 # Default caso falhe o crop
-                            
-                            if crop_paths:
-                                crop_img = Image.open(crop_paths[0]).convert('RGB')
-                                crop_tensor = transform_dict[input_key](crop_img).unsqueeze(0).to(device)
-                                
-                                with torch.no_grad():
-                                    l_res = model_instance(crop_tensor).cpu().numpy().flatten()
-                                    l_logit = l_res[0]
-                            
+                            # Se nenhum crop for validado pelo filtro de variância, penaliza o score local
+                            if len(img_local_logits) == 0:
+                                l_logit = -10.0
+                            else:
+                                logits_arr = np.array(img_local_logits)
+                                confidences = np.abs(logits_arr)
+                                exps = np.exp(confidences - np.max(confidences))
+                                weights = exps / np.sum(exps)
+                                l_logit = np.sum(weights * logits_arr)
+                        
                             combined_score = max(g_logit, l_logit)
                             
+                            # Salvando os logs base na tabela
                             table.loc[file_idx, f'{model_name}_global'] = g_logit
                             table.loc[file_idx, f'{model_name}_local'] = l_logit
                             table.loc[file_idx, f'{model_name}_fusiongl'] = combined_score
@@ -203,8 +214,58 @@ if __name__ == "__main__":
         extract_attention=args['extract_attention'],
         attention_output_dir=args['attention_output_dir']
     )
+
+    if args['extract_attention']:
+        for model_name in args['models']:
+            if f'{model_name}_global' in table.columns:
+                g_scores = table[f'{model_name}_global'].values
+                l_scores = table[f'{model_name}_local'].values
+
+                # --- 1. CALIBRAÇÃO (Z-SCORE NORMALIZATION) ---
+                g_std = np.std(g_scores) + 1e-7
+                l_std = np.std(l_scores) + 1e-7
+                
+                g_norm = (g_scores - np.mean(g_scores)) / g_std
+                l_norm = (l_scores - np.mean(l_scores)) / l_std
+
+                # --- ESTRATÉGIAS DE INTEGRAÇÃO GLOBAL-LOCAL ---
+                
+                # Teste A: Soft OR Probabilístico
+                p_g = 1 / (1 + np.exp(-g_norm))
+                p_l = 1 / (1 + np.exp(-l_norm))
+                p_fusion = 1 - (1 - p_g) * (1 - p_l)
+                table[f'{model_name}_fusion_soft_or'] = np.log(p_fusion / (1 - p_fusion + 1e-7))
+
+                # Teste B: Pesos Fixos
+                table[f'{model_name}_fusion_w_70G_30L'] = (0.7 * g_norm) + (0.3 * l_norm)
+                table[f'{model_name}_fusion_w_50G_50L'] = (0.5 * g_norm) + (0.5 * l_norm)
+                table[f'{model_name}_fusion_w_30G_70L'] = (0.3 * g_norm) + (0.7 * l_norm)
+
+                # Teste C: Max-Pooling Justo (O Pessimista Calibrado)
+                table[f'{model_name}_fusion_max_calibrated'] = np.maximum(g_norm, l_norm)
+
+                # Teste D: Fusão Dinâmica por Confiança (Softmax Global vs Local)
+                conf_g = np.abs(g_norm)
+                conf_l = np.abs(l_norm)
+                
+                exp_g = np.exp(conf_g)
+                exp_l = np.exp(conf_l)
+                sum_exp = exp_g + exp_l
+                
+                w_g = exp_g / sum_exp
+                w_l = exp_l / sum_exp
+                
+                table[f'{model_name}_fusion_dynamic'] = (w_g * g_norm) + (w_l * l_norm)
+
     if args['fusion'] is not None:
-        table['fusion'] = apply_fusion(table[args['models']].values, args['fusion'], axis=-1)
+        fusion_data = table[args['models']].copy()
+        
+        for col in args['models']:
+            col_data = fusion_data[col].values
+            col_std = np.std(col_data) + 1e-7
+            fusion_data[col] = (col_data - np.mean(col_data)) / col_std
+            
+        table['fusion'] = apply_fusion(fusion_data.values, args['fusion'], axis=-1)
     
     output_csv = args['out_csv']
     os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)

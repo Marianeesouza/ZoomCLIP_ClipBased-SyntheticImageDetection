@@ -19,20 +19,27 @@ def is_high_info(crop, variance_threshold=18.0):
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     _, std_dev = cv2.meanStdDev(gray)
     
-    # Se a variância for muito baixa, é uma área uniforme (parede, céu, etc)
+    # Se a variância for muito baixa, é uma área uniforme
     return std_dev[0][0] > variance_threshold
 
-def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=2, max_crops=1):
-    os.makedirs(output_dir, exist_ok=True)
+def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=-1, max_crops=1, save_images=False):
+    """
+    Extrai as regiões de maior energia do mapa de atenção.
+    Retorna uma lista de imagens no formato PIL.Image.
+    """
+    if save_images:
+        os.makedirs(output_dir, exist_ok=True)
+    
     base_name = os.path.splitext(os.path.basename(original_image_path))[0]
     
     try:
         pil_img = Image.open(original_image_path).convert('RGB')
         preprocess = Compose([Resize(INPUT_SIZE, Image.BICUBIC), CenterCrop(INPUT_SIZE)])
-        cropped_base_img = cv2.cvtColor(np.array(preprocess(pil_img)), cv2.COLOR_RGB2BGR)
+        cropped_base_img_rgb = np.array(preprocess(pil_img))
+        cropped_base_img_bgr = cv2.cvtColor(cropped_base_img_rgb, cv2.COLOR_RGB2BGR)
     except Exception as e:
         print(f"Erro ao carregar imagem: {e}")
-        return None
+        return []
 
     feat = attention_maps[layer_idx].to(torch.float32)
     if feat.dim() == 3:
@@ -42,12 +49,12 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
     num_tokens = feat.shape[0]
     if num_tokens == 257: patches = feat[1:, :]
     elif num_tokens == 256: patches = feat
-    else: return None
+    else: return []
 
     energy = torch.norm(patches, dim=-1)
     energy_norm = (energy - energy.min()) / (energy.max() - energy.min() + 1e-8)
 
-    grid = energy_norm.reshape(GRID_SIZE, GRID_SIZE).detach().numpy()
+    grid = energy_norm.reshape(GRID_SIZE, GRID_SIZE).detach().cpu().numpy()
     grid_resized = cv2.resize(grid, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_CUBIC)
     heatmap_8u = (grid_resized * 255).astype(np.uint8)
     
@@ -70,12 +77,14 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
 
     all_candidates.sort(key=lambda x: x[0], reverse=True)
 
-    output_filenames = []
-    heatmap_vis = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
-    cv2.imwrite(os.path.join(output_dir, f"{base_name}_heatmap.png"), heatmap_vis)
+    if save_images:
+        heatmap_vis = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
+        cv2.imwrite(os.path.join(output_dir, f"{base_name}_heatmap.png"), heatmap_vis)
+
+    output_crops = []
 
     for score, cnt in all_candidates:
-        if len(output_filenames) >= max_crops:
+        if len(output_crops) >= max_crops:
             break
             
         x, y, w, h = cv2.boundingRect(cnt)
@@ -83,19 +92,23 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
         x1, y1 = max(x - pad_w, 0), max(y - pad_h, 0)
         x2, y2 = min(x + w + pad_w, INPUT_SIZE), min(y + h + pad_h, INPUT_SIZE)
         
-        crop = cropped_base_img[y1:y2, x1:x2]
+        crop_bgr = cropped_base_img_bgr[y1:y2, x1:x2]
+        crop_rgb = cropped_base_img_rgb[y1:y2, x1:x2]
         
-        if is_high_info(crop, variance_threshold=22.0):
-            idx = len(output_filenames)
-            out_path = os.path.join(output_dir, f"{base_name}_crop_{idx}.png")
-            cv2.imwrite(out_path, crop)
-            output_filenames.append(out_path)
-            print(f"  ✓ Candidato aprovado: Crop {idx} salvo (Score: {score:.0f})")
+        if is_high_info(crop_bgr, variance_threshold=22.0):
+            pil_crop = Image.fromarray(crop_rgb)
+            output_crops.append(pil_crop)
+            
+            if save_images:
+                idx = len(output_crops) - 1
+                out_path = os.path.join(output_dir, f"{base_name}_crop_{idx}.png")
+                cv2.imwrite(out_path, crop_bgr)
+                print(f"  ✓ Candidato aprovado: Crop {idx} salvo (Score: {score:.0f})")
         else:
-            idx = len(output_filenames)
-            out_path = os.path.join(output_dir, f"{base_name}_discarted_crop_{idx}.png")
-            cv2.imwrite(out_path, crop)
-            output_filenames.append(out_path)
-            print(f"  [Ignorado] Candidato com alto score mas muito uniforme (Parede/Fundo).")
+            if save_images:
+                idx = len(output_crops)
+                out_path = os.path.join(output_dir, f"{base_name}_discarded_crop_{idx}.png")
+                cv2.imwrite(out_path, crop_bgr)
+                print(f"  [Ignorado] Candidato com alto score mas muito uniforme (Parede/Fundo).")
 
-    return output_filenames
+    return output_crops
