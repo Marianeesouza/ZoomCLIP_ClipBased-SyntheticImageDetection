@@ -48,10 +48,29 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
     print("Models:")
     for model_name in models_list:
         print(model_name, flush=True)
+        print(f"Carregando {model_name}...", flush=True)
         _, model_path, arch, norm_type, patch_size = get_config(model_name, weights_dir=weights_dir)
 
-        model = load_weights(create_architecture(arch), model_path)
-        model = model.to(device).eval()
+        # 1. O INVESTIGADOR GLOBAL (Pesos Originais)
+        global_model = load_weights(create_architecture(arch), model_path)
+        global_model = global_model.to(device).eval()
+
+        # 2. O INVESTIGADOR LOCAL (Pesos Treinados no Kaggle)
+        local_model = global_model
+
+        if "clipdet" in model_name: 
+            print("Carregando Especialista Local com os novos pesos...")
+            local_model = load_weights(create_architecture(arch), model_path) # Carrega a base
+            try:
+                local_weight_path = os.path.join('weights', 'local_head', 'local_head_weights.pth')
+                local_weights = torch.load(local_weight_path, map_location=device, weights_only=True)
+                local_model.load_state_dict(local_weights, strict=False)
+                local_model = local_model.to(device).eval()
+                print("✅ Especialista Local carregado com sucesso!")
+            except Exception as e:
+                print(f"⚠️ Erro ao carregar pesos locais (usando global como fallback): {e}")
+        
+        print("✅ Especialistas Global e Local carregados com sucesso!")
 
         transform = list()
         if patch_size is None:
@@ -75,7 +94,7 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
         transform.append(make_normalize(norm_type))
         transform = Compose(transform)
         transform_dict[transform_key] = transform
-        models_dict[model_name] = (transform_key, model)
+        models_dict[model_name] = (transform_key, global_model, local_model) 
         print(flush=True)
 
     ### test
@@ -102,12 +121,14 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                     batch_img[k] = torch.stack(batch_img[k], 0)
 
                 for model_name in do_models:
-                    model_instance = models_dict[model_name][1]
+                    global_model = models_dict[model_name][1]
+                    local_model = models_dict[model_name][2]
+                    
                     input_key = models_dict[model_name][0]
                     input_tensor = batch_img[input_key].clone().to(device)
 
                     with torch.no_grad():
-                        full_output = model_instance(input_tensor).cpu().numpy()
+                        full_output = global_model(input_tensor).cpu().numpy()
                         
                         if full_output.shape[1] == 1:
                             global_logits = full_output[:, 0]
@@ -116,8 +137,8 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                         else:
                             global_logits = np.mean(full_output, (1, 2))
 
-                    if extract_attention and hasattr(model_instance, 'forward_with_attention'):
-                        features, activations = model_instance.forward_with_attention(input_tensor)
+                    if extract_attention and hasattr(global_model, 'forward_with_attention'):
+                        features, activations = global_model.forward_with_attention(input_tensor)
                         
                         final_logits_batch = []
                         for b_idx in range(len(batch_id)):
@@ -143,7 +164,7 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                                     crop_tensor = transform_dict[input_key](crop_img).unsqueeze(0).to(device)
                                     
                                     with torch.no_grad():
-                                        l_res = model_instance(crop_tensor).cpu().numpy().flatten()
+                                        l_res = local_model(crop_tensor).cpu().numpy().flatten()
                                         img_local_logits.append(l_res[0])
                             
                             # Se nenhum crop for validado pelo filtro de variância, penaliza o score local
@@ -167,7 +188,7 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
                         logit1 = np.array(final_logits_batch)
                     
                     else:
-                        out_tens = model_instance(input_tensor).cpu().numpy()
+                        out_tens = global_model(input_tensor).cpu().numpy()
                         
                         if out_tens.shape[1] == 1:
                             logit1 = out_tens[:, 0]
