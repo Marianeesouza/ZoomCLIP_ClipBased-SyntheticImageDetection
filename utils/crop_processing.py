@@ -8,7 +8,7 @@ import os
 INPUT_SIZE = 224
 GRID_SIZE = 16 
 
-def is_high_info(crop, variance_threshold=18.0):
+def is_high_info(crop, variance_threshold=22.0):
     """
     Verifica se o recorte tem informação visual (detalhes/textura) suficiente.
     """
@@ -22,7 +22,7 @@ def is_high_info(crop, variance_threshold=18.0):
     # Se a variância for muito baixa, é uma área uniforme
     return std_dev[0][0] > variance_threshold
 
-def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=-1, max_crops=1, save_images=False):
+def process_attention_and_crop(original_image_path, attention_maps, output_dir="./attention_crops", layer_idx=-1, max_crops=1, save_images=False, return_debug=False):
     """
     Extrai as regiões de maior energia do mapa de atenção.
     Retorna uma lista de imagens no formato PIL.Image.
@@ -77,9 +77,41 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
 
     all_candidates.sort(key=lambda x: x[0], reverse=True)
 
+    bbox_img = cropped_base_img_bgr.copy()
+
+    for _, cnt in all_candidates:
+
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        pad_w = int(w * 0.2)
+        pad_h = int(h * 0.2)
+
+        x1 = max(x - pad_w, 0)
+        y1 = max(y - pad_h, 0)
+        x2 = min(x + w + pad_w, INPUT_SIZE)
+        y2 = min(y + h + pad_h, INPUT_SIZE)
+
+        cv2.rectangle(
+            bbox_img,
+            (x1, y1),
+            (x2, y2),
+            (0,255,0),
+            2
+        )
+
     if save_images:
-        heatmap_vis = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
-        cv2.imwrite(os.path.join(output_dir, f"{base_name}_heatmap.png"), heatmap_vis)
+        cv2.imwrite(
+            os.path.join(output_dir, f"{base_name}_boxes.png"),
+            bbox_img
+        )
+
+    heatmap_vis = cv2.applyColorMap(heatmap_8u, cv2.COLORMAP_JET)
+
+    if save_images:
+        cv2.imwrite(
+            os.path.join(output_dir, f"{base_name}_heatmap.png"),
+            heatmap_vis
+        )
 
     output_crops = []
 
@@ -110,5 +142,15 @@ def process_attention_and_crop(original_image_path, attention_maps, output_dir="
                 out_path = os.path.join(output_dir, f"{base_name}_discarded_crop_{idx}.png")
                 cv2.imwrite(out_path, crop_bgr)
                 print(f"  [Ignorado] Candidato com alto score mas muito uniforme (Parede/Fundo).")
+
+    if return_debug:
+
+        return {
+            "original": cropped_base_img_rgb,
+            "heatmap": cv2.cvtColor(heatmap_vis, cv2.COLOR_BGR2RGB),
+            "mask": mask,
+            "boxes": cv2.cvtColor(bbox_img, cv2.COLOR_BGR2RGB),
+            "crops": output_crops
+        }
 
     return output_crops

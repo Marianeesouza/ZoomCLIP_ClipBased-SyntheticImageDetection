@@ -51,26 +51,23 @@ def runnig_tests(input_csv, weights_dir, models_list, device, batch_size = 1, ex
         print(f"Carregando {model_name}...", flush=True)
         _, model_path, arch, norm_type, patch_size = get_config(model_name, weights_dir=weights_dir)
 
-        # 1. O INVESTIGADOR GLOBAL (Pesos Originais)
+        # original weights
         global_model = load_weights(create_architecture(arch), model_path)
         global_model = global_model.to(device).eval()
 
-        # 2. O INVESTIGADOR LOCAL (Pesos Treinados no Kaggle)
+        # local model weights
         local_model = global_model
 
         if "clipdet" in model_name: 
-            print("Carregando Especialista Local com os novos pesos...")
-            local_model = load_weights(create_architecture(arch), model_path) # Carrega a base
+            local_model = load_weights(create_architecture(arch), model_path)
             try:
                 local_weight_path = os.path.join('weights', 'local_head', 'local_head_weights.pth')
                 local_weights = torch.load(local_weight_path, map_location=device, weights_only=True)
                 local_model.load_state_dict(local_weights, strict=False)
                 local_model = local_model.to(device).eval()
-                print("✅ Especialista Local carregado com sucesso!")
+
             except Exception as e:
-                print(f"⚠️ Erro ao carregar pesos locais (usando global como fallback): {e}")
-        
-        print("✅ Especialistas Global e Local carregados com sucesso!")
+                print(f"Load local weights error: {e}")
 
         transform = list()
         if patch_size is None:
@@ -242,7 +239,7 @@ if __name__ == "__main__":
                 g_scores = table[f'{model_name}_global'].values
                 l_scores = table[f'{model_name}_local'].values
 
-                # --- 1. CALIBRAÇÃO (Z-SCORE NORMALIZATION) ---
+                # --- Z-SCORE NORMALIZATION ---
                 g_std = np.std(g_scores) + 1e-7
                 l_std = np.std(l_scores) + 1e-7
                 
@@ -262,7 +259,7 @@ if __name__ == "__main__":
                 table[f'{model_name}_fusion_w_50G_50L'] = (0.5 * g_norm) + (0.5 * l_norm)
                 table[f'{model_name}_fusion_w_30G_70L'] = (0.3 * g_norm) + (0.7 * l_norm)
 
-                # Teste C: Max-Pooling Justo (O Pessimista Calibrado)
+                # Teste C: Max-Pooling
                 table[f'{model_name}_fusion_max_calibrated'] = np.maximum(g_norm, l_norm)
 
                 # Teste D: Fusão Dinâmica por Confiança (Softmax Global vs Local)
